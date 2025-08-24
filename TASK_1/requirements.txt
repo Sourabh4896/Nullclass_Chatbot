@@ -1,0 +1,10 @@
+streamlit
+langchain
+faiss-cpu
+openai
+sentence-transformers
+pandas
+requests
+beautifulsoup4
+schedule
+langchain-community
