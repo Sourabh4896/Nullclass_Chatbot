@@ -10,3 +10,6 @@ from typing import List, Dict
 import plotly.express as px
 from collections import Counter
 
+# Only using scikit-learn for TF-IDF
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
