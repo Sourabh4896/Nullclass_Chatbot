@@ -1,245 +1,341 @@
-# Task 5: Sentiment Analysis Chatbot
+import os
 import streamlit as st
 import pandas as pd
+import numpy as np
 from textblob import TextBlob
-import matplotlib.pyplot as plt
+from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
-from groq import Groq
-from datetime import datetime
+from typing import Dict, List, Optional
 
-# Initialize Groq client
-client = Groq(api_key="YOUR_GROQ_API_KEY")
+# =====================
+# Page configuration
+# =====================
+st.set_page_config(
+    page_title="AI-Powered Customer Support Chatbot",
+    page_icon="🤖",
+    layout="wide"
+)
 
-def analyze_sentiment_textblob(text):
-    """Analyze sentiment using TextBlob"""
-    blob = TextBlob(text)
-    polarity = blob.sentiment.polarity
-    subjectivity = blob.sentiment.subjectivity
-    
-    # Classify sentiment
-    if polarity > 0.1:
-        sentiment = "Positive"
-    elif polarity < -0.1:
-        sentiment = "Negative"
-    else:
-        sentiment = "Neutral"
-    
-    # Confidence based on absolute polarity
-    confidence = min(abs(polarity) * 100, 100)
-    
-    return {
-        'sentiment': sentiment,
-        'polarity': polarity,
-        'subjectivity': subjectivity,
-        'confidence': confidence
+# =====================
+# Utilities
+# =====================
+
+def init_session_state():
+    """Initialize all session_state keys safely."""
+    defaults = {
+        "conversation_history": [],
+        "sentiment_history": [],
+        "ai_agent": None,
+        "example_input": "",
+        "api_choice": "Fallback Mode",
+        "api_key": "",
     }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
-def get_sentiment_appropriate_response(user_message, sentiment_data):
-    """Generate appropriate response based on sentiment"""
-    sentiment = sentiment_data['sentiment']
-    polarity = sentiment_data['polarity']
-    
-    # Create context-aware prompt
-    context = f"""
-    The user has expressed a {sentiment.lower()} sentiment (polarity: {polarity:.2f}).
-    User message: "{user_message}"
-    
-    Respond appropriately to their emotional state:
-    - If positive: Be encouraging and maintain the positive energy
-    - If negative: Be empathetic, supportive, and offer help
-    - If neutral: Be informative and engaging
-    
-    Keep the response helpful and emotionally intelligent.
-    """
-    
-    try:
-        response = client.chat.completions.create(
-            model="llama3-8b-8192",
-            messages=[{"role": "user", "content": context}],
-            max_tokens=200
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        # Fallback responses based on sentiment
-        fallback_responses = {
-            'Positive': "That's wonderful to hear! I'm glad you're feeling positive. How can I help you today?",
-            'Negative': "I understand you might be going through a difficult time. I'm here to help and support you. What can I do for you?",
-            'Neutral': "Thank you for your message. I'm here to assist you with whatever you need."
+init_session_state()
+
+# =====================
+# Sentiment & Emotion Analyzer
+# =====================
+class EmotionAwareSentimentAnalyzer:
+    def __init__(self):
+        self.emotion_keywords = {
+            'angry': ['angry', 'furious', 'mad', 'irritated', 'annoyed', 'frustrated', 'outraged', 'livid', 'hate'],
+            'sad': ['sad', 'depressed', 'unhappy', 'disappointed', 'upset', 'heartbroken', 'miserable', 'terrible'],
+            'happy': ['happy', 'excited', 'thrilled', 'delighted', 'pleased', 'satisfied', 'great', 'awesome', 'love'],
+            'fearful': ['worried', 'scared', 'afraid', 'anxious', 'concerned', 'nervous', 'panic', 'terrified'],
+            'surprised': ['surprised', 'shocked', 'amazed', 'astonished', 'unexpected', 'wow'],
+            'confused': ['confused', 'unclear', 'lost', 'puzzled', 'perplexed', "don't understand", 'help'],
         }
-        return fallback_responses.get(sentiment, "I'm here to help you. What would you like to know?")
+        self.intensity_modifiers = {
+            'very': 1.5, 'really': 1.4, 'extremely': 1.8, 'totally': 1.6,
+            'quite': 1.2, 'somewhat': 0.8, 'slightly': 0.6, 'a bit': 0.7,
+            'absolutely': 1.7, 'completely': 1.6, 'incredibly': 1.5,
+        }
 
-def create_sentiment_visualization(sentiment_history):
-    """Create visualization of sentiment over time"""
-    if not sentiment_history:
-        return None
-    
-    df = pd.DataFrame(sentiment_history)
-    
-    # Create line chart for polarity over time
-    fig = go.Figure()
-    
-    fig.add_trace(go.Scatter(
-        x=df['timestamp'],
-        y=df['polarity'],
-        mode='lines+markers',
-        name='Sentiment Polarity',
-        line=dict(color='blue'),
-        hovertemplate='Time: %{x}<br>Polarity: %{y:.2f}<extra></extra>'
-    ))
-    
-    # Add sentiment zones
-    fig.add_hline(y=0.1, line_dash="dash", line_color="green", annotation_text="Positive Zone")
-    fig.add_hline(y=-0.1, line_dash="dash", line_color="red", annotation_text="Negative Zone")
-    fig.add_hrect(y0=-0.1, y1=0.1, fillcolor="yellow", opacity=0.2, annotation_text="Neutral Zone")
-    
-    fig.update_layout(
-        title="Sentiment Analysis Over Time",
-        xaxis_title="Time",
-        yaxis_title="Sentiment Polarity",
-        yaxis=dict(range=[-1, 1])
-    )
-    
-    return fig
+    def analyze_sentiment(self, text: str) -> Dict:
+        if not text or not text.strip():
+            return {
+                'sentiment': 'neutral', 'polarity': 0.0, 'subjectivity': 0.0,
+                'confidence': 0.0, 'emotions': {}, 'intensity': 'low', 'urgency_level': 'low',
+            }
 
-def calculate_satisfaction_metrics(sentiment_history):
-    """Calculate customer satisfaction metrics"""
-    if not sentiment_history:
-        return {}
-    
-    df = pd.DataFrame(sentiment_history)
-    
-    # Count sentiments
-    sentiment_counts = df['sentiment'].value_counts()
-    total_messages = len(df)
-    
-    # Calculate metrics
-    positive_rate = sentiment_counts.get('Positive', 0) / total_messages * 100
-    negative_rate = sentiment_counts.get('Negative', 0) / total_messages * 100
-    neutral_rate = sentiment_counts.get('Neutral', 0) / total_messages * 100
-    
-    # Average sentiment polarity
-    avg_polarity = df['polarity'].mean()
-    
-    # Customer satisfaction score (0-100)
-    satisfaction_score = ((avg_polarity + 1) / 2) * 100
-    
-    return {
-        'positive_rate': positive_rate,
-        'negative_rate': negative_rate,
-        'neutral_rate': neutral_rate,
-        'avg_polarity': avg_polarity,
-        'satisfaction_score': satisfaction_score,
-        'total_interactions': total_messages
-    }
+        t = text.lower()
+        blob = TextBlob(t)
+        polarity = float(blob.sentiment.polarity)
+        subjectivity = float(blob.sentiment.subjectivity)
 
-def main():
-    st.title("💭 Sentiment-Aware Chatbot")
-    st.write("A chatbot that understands and responds to your emotions")
-    
-    # Initialize session state
-    if 'messages' not in st.session_state:
-        st.session_state.messages = []
-    if 'sentiment_history' not in st.session_state:
-        st.session_state.sentiment_history = []
-    
-    # Sidebar for analytics
-    st.sidebar.title("Sentiment Analytics")
-    
-    # Display metrics if available
-    if st.session_state.sentiment_history:
-        metrics = calculate_satisfaction_metrics(st.session_state.sentiment_history)
-        
-        st.sidebar.metric("Customer Satisfaction", f"{metrics['satisfaction_score']:.1f}%")
-        st.sidebar.metric("Total Interactions", metrics['total_interactions'])
-        st.sidebar.metric("Positive Rate", f"{metrics['positive_rate']:.1f}%")
-        st.sidebar.metric("Negative Rate", f"{metrics['negative_rate']:.1f}%")
-    
-    # Main chat interface
-    st.header("💬 Chat")
-    
-    # User input
-    user_message = st.text_input("Enter your message:", key="user_input")
-    
-    if st.button("Send") and user_message:
-        # Analyze sentiment
-        sentiment_data = analyze_sentiment_textblob(user_message)
-        
-        # Store user message with sentiment
-        st.session_state.messages.append({
-            "role": "user",
-            "content": user_message,
-            "sentiment": sentiment_data
-        })
-        
-        # Store sentiment history
-        st.session_state.sentiment_history.append({
-            'timestamp': datetime.now(),
-            'message': user_message,
-            'sentiment': sentiment_data['sentiment'],
-            'polarity': sentiment_data['polarity'],
-            'confidence': sentiment_data['confidence']
-        })
-        
-        # Generate appropriate response
-        bot_response = get_sentiment_appropriate_response(user_message, sentiment_data)
-        
-        # Store bot response
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": bot_response
-        })
-    
-    # Display chat history
-    for message in st.session_state.messages:
-        if message["role"] == "user":
-            sentiment_info = message.get("sentiment", {})
-            sentiment_label = sentiment_info.get('sentiment', 'Unknown')
-            confidence = sentiment_info.get('confidence', 0)
-            
-            # Color code based on sentiment
-            color_map = {'Positive': '🟢', 'Negative': '🔴', 'Neutral': '🟡'}
-            emoji = color_map.get(sentiment_label, '⚪')
-            
-            st.write(f"👤 **You:** {message['content']}")
-            st.write(f"{emoji} *Detected: {sentiment_label} ({confidence:.1f}% confidence)*")
+        if polarity > 0.1:
+            sentiment = 'positive'
+        elif polarity < -0.1:
+            sentiment = 'negative'
         else:
-            st.write(f"🤖 **Bot:** {message['content']}")
-        st.write("---")
-    
-    # Sentiment visualization
-    if st.session_state.sentiment_history and len(st.session_state.sentiment_history) > 1:
-        st.header("📊 Sentiment Analysis")
-        
-        # Create visualization
-        fig = create_sentiment_visualization(st.session_state.sentiment_history)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True)
-        
-        # Sentiment distribution pie chart
-        df = pd.DataFrame(st.session_state.sentiment_history)
-        sentiment_counts = df['sentiment'].value_counts()
-        
-        fig_pie = px.pie(
-            values=sentiment_counts.values,
-            names=sentiment_counts.index,
-            title="Sentiment Distribution",
-            color_discrete_map={'Positive': 'green', 'Negative': 'red', 'Neutral': 'yellow'}
-        )
-        st.plotly_chart(fig_pie, use_container_width=True)
-    
-    # Clear conversation button
-    if st.button("Clear Conversation"):
-        st.session_state.messages = []
-        st.session_state.sentiment_history = []
-        st.experimental_rerun()
-    
-    # Instructions
-    st.write("---")
-    st.write("**How it works:**")
-    st.write("1. Type your message and the bot will analyze your sentiment")
-    st.write("2. The bot responds appropriately based on your emotional state")
-    st.write("3. View analytics in the sidebar and charts below")
+            sentiment = 'neutral'
 
-if __name__ == "__main__":
-    main()
+        emotions = self._detect_emotions(t)
+        intensity = self._calculate_intensity(t, abs(polarity))
+        urgency_level = self._calculate_urgency(t, sentiment, intensity, emotions)
+        confidence = min(subjectivity * abs(polarity) * 2.0, 1.0)
+
+        return {
+            'sentiment': sentiment,
+            'polarity': polarity,
+            'subjectivity': subjectivity,
+            'confidence': confidence,
+            'emotions': emotions,
+            'intensity': intensity,
+            'urgency_level': urgency_level,
+        }
+
+    def _detect_emotions(self, text: str) -> Dict[str, float]:
+        emotions: Dict[str, float] = {}
+        words = text.split()
+        for emotion, keywords in self.emotion_keywords.items():
+            score = 0.0
+            for keyword in keywords:
+                if keyword in text:
+                    score += 1.0
+                    if keyword in words:
+                        idx = words.index(keyword)
+                        if idx > 0:
+                            prev = words[idx - 1]
+                            if prev in self.intensity_modifiers:
+                                score *= self.intensity_modifiers[prev]
+            if score > 0:
+                emotions[emotion] = min(score / 3.0, 1.0)
+        return emotions
+
+    def _calculate_intensity(self, text: str, base_polarity: float) -> str:
+        intensity_score = base_polarity
+        caps_ratio = (sum(1 for c in text if c.isupper()) / len(text)) if text else 0
+        if caps_ratio > 0.3:
+            intensity_score *= 1.5
+        exclam = text.count('!')
+        if exclam > 0:
+            intensity_score *= (1 + exclam * 0.2)
+        if '!!!' in text or '???' in text:
+            intensity_score *= 1.3
+        if any(w in text for w in ['urgent', 'emergency', 'immediately', 'asap', 'critical']):
+            intensity_score *= 1.4
+        if intensity_score > 0.7:
+            return 'high'
+        elif intensity_score > 0.3:
+            return 'medium'
+        return 'low'
+
+    def _calculate_urgency(self, text: str, sentiment: str, intensity: str, emotions: Dict[str, float]) -> str:
+        urgency_score = 0
+        high = ['emergency', 'urgent', 'critical', 'broken', 'not working', 'error', 'bug',
+                'refund', 'cancel', 'billing', 'charged', 'payment', 'security', 'hack']
+        medium = ['problem', 'issue', 'help', 'support', 'question', 'confused', 'stuck']
+        for k in high:
+            if k in text:
+                urgency_score += 2
+        for k in medium:
+            if k in text:
+                urgency_score += 1
+        if sentiment == 'negative' and intensity == 'high':
+            urgency_score += 3
+        elif sentiment == 'negative' and intensity == 'medium':
+            urgency_score += 2
+        if emotions.get('angry', 0) > 0.7:
+            urgency_score += 2
+        if emotions.get('fearful', 0) > 0.6:
+            urgency_score += 1
+        if urgency_score >= 5:
+            return 'critical'
+        elif urgency_score >= 3:
+            return 'high'
+        elif urgency_score >= 1:
+            return 'medium'
+        return 'low'
+
+# =====================
+# AI Response Generator
+# =====================
+class AICustomerSupportAgent:
+    def __init__(self, api_key: Optional[str] = None, model_name: str = 'gemini-1.5-flash'):
+        self.api_key = api_key
+        self.model = None
+        self.model_name = model_name
+        try:
+            if api_key:
+                import google.generativeai as genai
+                genai.configure(api_key=api_key)
+                self.model = genai.GenerativeModel(model_name)
+        except Exception:
+            self.model = None
+
+        self.fallback_responses = {
+            'positive': {
+                'high': "I'm thrilled to hear you're so happy! How can I help make your experience even better?",
+                'medium': "I'm glad to hear you're pleased! How can I assist you further?",
+                'low': "Thank you for your feedback! How can I help you today?",
+            },
+            'negative': {
+                'critical': "I sincerely apologize for this critical issue. I'm escalating this immediately to our senior support team for urgent resolution.",
+                'high': "I completely understand your frustration, and I'm truly sorry. Let me personally ensure we resolve this for you immediately.",
+                'medium': "I'm sorry to hear you're having difficulties. Let me work with you to find a solution.",
+                'low': "I apologize for the trouble. What specific issue can I assist you with?",
+            },
+            'neutral': {
+                'high': "Thank you for reaching out! I'm here to help with whatever you need.",
+                'medium': "Hello! What can I help you with today?",
+                'low': "How can I assist you?",
+            },
+        }
+
+    def generate_customer_support_response(self, user_message: str, sentiment_analysis: Dict) -> str:
+        if not self.model:
+            return self._get_fallback_response(sentiment_analysis)
+        try:
+            prompt = self._create_support_prompt(user_message, sentiment_analysis)
+            response = self.model.generate_content(prompt)
+            text = getattr(response, 'text', None)
+            return text.strip() if text else self._get_fallback_response(sentiment_analysis)
+        except Exception:
+            return self._get_fallback_response(sentiment_analysis)
+
+    def _create_support_prompt(self, user_message: str, sa: Dict) -> str:
+        sentiment = sa['sentiment']
+        intensity = sa['intensity']
+        emotions = sa['emotions']
+        urgency = sa['urgency_level']
+        emotion_context = ""
+        if emotions:
+            lst = [f"{k} ({v:.2f})" for k, v in emotions.items() if v > 0.3]
+            if lst:
+                emotion_context = f"Detected emotions: {', '.join(lst)}. "
+        return f"""
+You are an expert customer support agent. Respond to the following customer message:
+
+CUSTOMER MESSAGE: "{user_message}"
+
+SENTIMENT ANALYSIS:
+- Sentiment: {sentiment} ({intensity} intensity)
+- Urgency: {urgency}
+- {emotion_context}
+- Confidence: {sa['confidence']:.2f}
+
+INSTRUCTIONS:
+- Be empathetic, professional, concise.
+- Address issue directly and provide solutions.
+- Match tone to emotional state and urgency.
+"""
+
+    def _get_fallback_response(self, sa: Dict) -> str:
+        sentiment = sa['sentiment']
+        urgency = sa['urgency_level']
+        key = urgency if urgency in ['critical'] else sa['intensity']
+        bucket = self.fallback_responses.get(sentiment, {})
+        return bucket.get(key, "Thank you for contacting us. I'm here to help you.")
+
+ANALYZER = EmotionAwareSentimentAnalyzer()
+
+# =====================
+# Sidebar: API config & controls
+# =====================
+with st.sidebar:
+    st.header("🔑 API Configuration")
+    st.session_state.api_choice = st.selectbox("Select AI Provider:", ["Gemini AI", "Fallback Mode"], index=0)
+    resolved_api_key = (
+        st.text_input("Enter Gemini API Key:", type="password")
+        if st.session_state.api_choice == "Gemini AI" else ""
+    )
+
+    if st.session_state.api_choice == "Gemini AI":
+        if not resolved_api_key:
+            resolved_api_key = os.getenv("GOOGLE_API_KEY", "")
+        if resolved_api_key and (not st.session_state.ai_agent or st.session_state.ai_agent.api_key != resolved_api_key):
+            st.session_state.ai_agent = AICustomerSupportAgent(api_key=resolved_api_key)
+            st.success("✅ Gemini connected")
+        elif not resolved_api_key:
+            st.info("ℹ️ Provide an API key to enable AI responses")
+    else:
+        st.session_state.ai_agent = AICustomerSupportAgent(api_key=None)
+        st.info("🔄 Using fallback response mode")
+
+    st.header("⚙️ Controls")
+    if st.button("🗑️ Clear Conversation", use_container_width=True):
+        st.session_state.conversation_history = []
+        st.session_state.sentiment_history = []
+        st.rerun()
+
+# =====================
+# Main layout
+# =====================
+st.title("🤖 AI-Powered Customer Support Chatbot")
+st.markdown("*Advanced sentiment analysis with Gemini AI-powered responses*")
+
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    st.subheader("💬 Chat Interface")
+
+    chat_container = st.container()
+    with chat_container:
+        for user_msg, bot_msg, sa in st.session_state.conversation_history:
+            st.write(f"**You:** {user_msg}")
+            st.caption(f"Sentiment: {sa['sentiment']} | Intensity: {sa['intensity']} | Urgency: {sa['urgency_level']}")
+            st.write(f"**Bot:** {bot_msg}")
+
+    with st.form("chat_form", clear_on_submit=True):
+        user_input = st.text_area(
+            "Type your message:",
+            value=st.session_state.example_input,
+            placeholder="Describe your issue...",
+            height=100,
+        )
+        st.session_state.example_input = ""
+        submitted = st.form_submit_button("Send Message")
+
+        if submitted and user_input.strip():
+            with st.spinner("🤖 Analyzing and responding..."):
+                sa = ANALYZER.analyze_sentiment(user_input)
+                if st.session_state.ai_agent:
+                    bot = st.session_state.ai_agent.generate_customer_support_response(user_input, sa)
+                else:
+                    bot = "I'm here to help! Please configure an API key."
+                st.session_state.conversation_history.append((user_input, bot, sa))
+                st.session_state.sentiment_history.append({
+                    'timestamp': datetime.now(),
+                    'message': user_input,
+                    'sentiment': sa['sentiment'],
+                    'polarity': sa['polarity'],
+                    'intensity': sa['intensity'],
+                    'urgency_level': sa['urgency_level'],
+                    'emotions': sa['emotions'],
+                    'confidence': sa['confidence'],
+                })
+            st.rerun()
+
+
+with col2:
+    st.subheader("📊 Analytics")
+    if st.session_state.sentiment_history:
+        latest = st.session_state.sentiment_history[-1]
+        st.metric("Sentiment", latest['sentiment'].title())
+        st.metric("Intensity", latest['intensity'].title())
+        st.metric("Urgency", latest['urgency_level'].title())
+
+        sentiments = [x['sentiment'] for x in st.session_state.sentiment_history]
+        s_counts = pd.Series(sentiments).value_counts()
+        fig_pie = px.pie(values=s_counts.values, names=s_counts.index, title="Sentiment Distribution")
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+        priorities = [x['urgency_level'] for x in st.session_state.sentiment_history]
+        p_counts = pd.Series(priorities).value_counts()
+        fig_priority = px.bar(x=p_counts.index, y=p_counts.values, title="Priority Distribution")
+        st.plotly_chart(fig_priority, use_container_width=True)
+
+        if len(st.session_state.sentiment_history) > 1:
+            df = pd.DataFrame(st.session_state.sentiment_history)
+            fig_line = px.line(df, x='timestamp', y='polarity', title="Sentiment Timeline")
+            st.plotly_chart(fig_line, use_container_width=True)
+
+# Footer
+st.markdown("---")
+st.markdown("<div style='text-align:center;color:#666;'>AI-Powered Chatbot | Streamlit & Gemini AI</div>", unsafe_allow_html=True)

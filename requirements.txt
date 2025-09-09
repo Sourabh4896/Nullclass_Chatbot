@@ -1,0 +1,10 @@
+streamlit
+groq
+python-dotenv
+langchain_community
+sentence-transformers
+faiss-cpu
+google-genai
+textblob
+plotly
+google-generativeai
